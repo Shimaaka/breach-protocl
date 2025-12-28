@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Breach Protocol (JS)</title>
+  <style>
+    html, body { height:100%; margin:0; background:#0a0c10; color:#dce6f5; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    #wrap { display:flex; height:100%; }
+    canvas { display:block; width:100%; height:100%; }
+  </style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+</div>
+
+<script>
+(() => {
+  // =========================================================
+  // CONFIG
+  // =========================================================
+  const TOKENS = ["BD","55","1C","E9","7A","FF","0A","9C","DA","6B","2E","F1"];
+  const STEP_TIME_LIMIT = 15.0;
+
+  // Colors
+  const COL = {
+    bg: [10,12,16],
+    panel:[18,22,30],
+    text:[220,230,245],
+    dim:[130,145,170],
+    green:[0,255,160],
+    cyan:[0,200,255],
+    yellow:[255,220,80],
+    magenta:[220,120,255],
+    red:[255,90,90],
+    cell:[26,32,44],
+    cellBorder:[50,60,80],
+    pathRed:[255,80,80],
+    pathBlue:[80,140,255],
+    pathGreen:[0,255,160],
+    extras:[
+      [255,220,80],
+      [220,120,255],
+      [0,200,255],
+      [255,140,0],
+      [140,255,140]
+    ]
+  };
+
+  // =========================================================
+  // CANVAS
+  // =========================================================
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(window.innerWidth * dpr);
+    canvas.height = Math.floor(window.innerHeight * dpr);
+    canvas.style.width = window.innerWidth + "px";
+    canvas.style.height = window.innerHeight + "px";
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  function rgb(a){ return `rgb(${a[0]},${a[1]},${a[2]})`; }
+  function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+
+  // =========================================================
+  // GAME LOGIC
+  // =========================================================
+  function settingsFromDifficulty(d){
+    d = clamp(d, 5, 15);
+    const grid = d;
+    const buffer = clamp(4 + Math.floor((d-5)/2), 4, 10);
+    const extraPaths = clamp(Math.floor((d-7)/2), 0, COL.extras.length);
+    return { d, grid, buffer, extraPaths };
+  }
+
+  function genGrid(n){
+    const g = [];
+    for(let r=0;r<n;r++){
+      const row=[];
+      for(let c=0;c<n;c++) row.push(TOKENS[Math.floor(Math.random()*TOKENS.length)]);
+      g.push(row);
+    }
+    return g;
+  }
+
+  function allowedMoves(n, step, last){
+    if(step===0){
+      const a=[];
+      for(let c=0;c<n;c++) a.push([0,c]);
+      return a;
+    }
+    const [r,c]=last;
+    const a=[];
+    if(step%2===1){
+      for(let rr=0;rr<n;rr++) a.push([rr,c]);
+    }else{
+      for(let cc=0;cc<n;cc++) a.push([r,cc]);
+    }
+    return a;
+  }
+
+  function bufferContains(buffer, seq){
+    if(seq.length>buffer.length) return false;
+    for(let i=0;i<=buffer.length-seq.length;i++){
+      let ok=true;
+      for(let j=0;j<seq.length;j++){
+        if(buffer[i+j]!==seq[j]){ ok=false; break; }
+      }
+      if(ok) return true;
+    }
+    return false;
+  }
+
+  function scoreAndDone(buffer, puzzles){
+    let score=0;
+    const done=[];
+    puzzles.forEach((seq,i)=>{
+      if(bufferContains(buffer,seq)){
+        done.push(i);
+        score += 100*seq.length;
+      }
+    });
+    return {score, done};
+  }
+
+  function generateValidPath(n, length){
+    const used = new Set();
+    const path=[];
+    let r=0, c=Math.floor(Math.random()*n);
+    path.push([r,c]); used.add(r+","+c);
+    for(let step=1; step<length; step++){
+      let candidates=[];
+      if(step%2===1){
+        const col = path[path.length-1][1];
+        for(let rr=0; rr<n; rr++) candidates.push([rr,col]);
+      }else{
+        const row = path[path.length-1][0];
+        for(let cc=0; cc<n; cc++) candidates.push([row,cc]);
+      }
+      const unused = candidates.filter(p=>!used.has(p[0]+","+p[1]));
+      const pickFrom = unused.length?unused:candidates;
+      const nxt = pickFrom[Math.floor(Math.random()*pickFrom.length)];
+      path.push(nxt);
+      used.add(nxt[0]+","+nxt[1]);
+    }
+    return path;
+  }
+
+  function tokensOnPath(grid, path){
+    return path.map(([r,c])=>grid[r][c]);
+  }
+
+  function makePuzzleFromTokens(tokens, minLen=3, maxLen=6){
+    const L=tokens.length;
+    maxLen = Math.min(maxLen, L);
+    minLen = Math.min(minLen, maxLen);
+    const len = Math.floor(Math.random()*(maxLen-minLen+1))+minLen;
+    const start = Math.floor(Math.random()*(L-len+1));
+    return tokens.slice(start,start+len);
+  }
+
+  const SCEN_LABELS = [
+    "Choix: P1 ou P2",
+    "P1 + P2 possible",
+    "P2 prioritaire (P2 sans P1 possible)",
+  ];
+
+  function generateScenario(grid, s){
+    const n=s.grid, buf=s.buffer;
+    const scenarioId = [0,1,2][Math.floor(Math.random()*3)];
+    const paths = {};
+
+    const p1 = generateValidPath(n, buf);
+    const p2 = generateValidPath(n, buf);
+    const t1 = tokensOnPath(grid, p1);
+    const t2 = tokensOnPath(grid, p2);
+
+    let puzzle1 = makePuzzleFromTokens(t1, 3, Math.min(6,buf));
+    let puzzle2 = makePuzzleFromTokens(t2, 3, Math.min(6,buf));
+
+    paths.P1 = p1;
+    paths.P2 = p2;
+
+    if(scenarioId===1){
+      const p12 = generateValidPath(n, buf);
+      const t12 = tokensOnPath(grid, p12);
+      puzzle1 = makePuzzleFromTokens(t12, 3, Math.min(6,buf));
+      puzzle2 = makePuzzleFromTokens(t12, 3, Math.min(6,buf));
+      for(let k=0;k<8;k++){
+        if(puzzle2.join(",")!==puzzle1.join(",")) break;
+        puzzle2 = makePuzzleFromTokens(t12, 3, Math.min(6,buf));
+      }
+      paths.P12 = p12;
+    }
+
+    if(scenarioId===2){
+      const p2only = generateValidPath(n, buf);
+      const t2only = tokensOnPath(grid, p2only);
+      const len2 = clamp(puzzle2.length, 3, Math.min(6,buf));
+      puzzle2 = t2only.slice(0, len2);
+      paths.P2ONLY = p2only;
+    }
+
+    for(let i=0;i<s.extraPaths;i++){
+      paths["EXTRA"+(i+1)] = generateValidPath(n, buf);
+    }
+
+    return { puzzles:[puzzle1,puzzle2], paths, scenarioId };
+  }
+
+  // =========================================================
+  // LAYOUT
+  // =========================================================
+  function computeLayout(w,h,n){
+    const pad=16, top=78, bottom=16;
+    const rightW = clamp(Math.floor(w*0.34), 320, 520);
+    const gridPanel = {x:pad,y:top,w:w-rightW-3*pad,h:h-top-bottom};
+    const rightPanel = {x:gridPanel.x+gridPanel.w+pad,y:top,w:rightW,h:gridPanel.h};
+    const inner=16, header=96, gap=6;
+    const availW = gridPanel.w-2*inner;
+    const availH = gridPanel.h-2*inner-header;
+    const cellW = Math.floor((availW-(n-1)*gap)/n);
+    const cellH = Math.floor((availH-(n-1)*gap)/n);
+    const cell = clamp(Math.min(cellW,cellH), 18, 72);
+    const origin = {x:gridPanel.x+inner,y:gridPanel.y+inner+header};
+    return {gridPanel,rightPanel,cell,gap,origin};
+  }
+
+  function cellRect(origin, cell, gap, r,c){
+    return {x:origin.x + c*(cell+gap), y:origin.y + r*(cell+gap), w:cell, h:cell};
+  }
+
+  function hitCell(mx,my,n,origin,cell,gap){
+    const stride = cell+gap;
+    const c = Math.floor((mx-origin.x)/stride);
+    const r = Math.floor((my-origin.y)/stride);
+    if(r<0||c<0||r>=n||c>=n) return null;
+    const rect = cellRect(origin,cell,gap,r,c);
+    if(mx>=rect.x && mx<=rect.x+rect.w && my>=rect.y && my<=rect.y+rect.h) return [r,c];
+    return null;
+  }
+
+  // =========================================================
+  // GAME STATE
+  // =========================================================
+  const STATE = { MENU:"menu", PLAY:"play", RESULT:"result" };
+  let state = STATE.MENU;
+
+  let diff = 8;
+  let s = settingsFromDifficulty(diff);
+
+  let grid=[], puzzles=[], paths={}, scenarioId=0;
+  let buffer=[], chosen=[], cursor=[0,0];
+  let stepTimerStart = performance.now()/1000;
+  let status = "Menu: choisis la difficulté.";
+  let showPaths = false;
+  let lastScore = 0;
+
+  function startPuzzle(){
+    s = settingsFromDifficulty(diff);
+    grid = genGrid(s.grid);
+    const out = generateScenario(grid, s);
+    puzzles = out.puzzles;
+    paths = out.paths;
+    scenarioId = out.scenarioId;
+
+    buffer=[]; chosen=[]; cursor=[0,0];
+    stepTimerStart = performance.now()/1000;
+    status="Row 0 puis alternance colonne/ligne. (chemins)";
+    lastScore=0;
+    state = STATE.PLAY;
+  }
+
+  function canPick(r,c){
+    const step = chosen.length;
+    const last = chosen.length?chosen[chosen.length-1]:null;
+    const allowed = allowedMoves(s.grid, step, last);
+    return allowed.some(([rr,cc])=>rr===r && cc===c);
+  }
+
+  function pick(r,c){
+    if(!canPick(r,c)){
+      status="Coup interdit (Row 0 puis alternance colonne/ligne).";
+      return;
+    }
+    chosen.push([r,c]);
+    buffer.push(grid[r][c]);
+    stepTimerStart = performance.now()/1000;
+    status="Sélection OK.";
+    if(buffer.length >= s.buffer){
+      finishPuzzle();
+    }
+  }
+
+  function undo(){
+    if(!chosen.length){ status="Rien à annuler."; return; }
+    chosen.pop(); buffer.pop();
+    stepTimerStart = performance.now()/1000;
+    status="Undo OK.";
+  }
+
+  function finishPuzzle(){
+    const res = scoreAndDone(buffer, puzzles);
+    lastScore = res.score;
+    state = STATE.RESULT;
+  }
+
+  function pathColor(key){
+    if(key==="P1") return COL.pathRed;
+    if(key==="P2") return COL.pathBlue;
+    if(key==="P12") return COL.pathGreen;
+    if(key==="P2ONLY") return COL.pathBlue;
+    if(key.startsWith("EXTRA")){
+      const idx = parseInt(key.replace("EXTRA",""),10)-1;
+      return COL.extras[idx] || COL.cyan;
+    }
+    return COL.cyan;
+  }
+
+  // =========================================================
+  // INPUT (AZERTY)
+  // =========================================================
+  window.addEventListener("keydown", (e) => {
+    if(state===STATE.MENU){
+      if(e.key==="ArrowLeft" || e.key.toLowerCase()==="q"){ diff=clamp(diff-1,5,15); }
+      else if(e.key==="ArrowRight" || e.key.toLowerCase()==="d"){ diff=clamp(diff+1,5,15); }
+      else if(e.key==="Enter"){ startPuzzle(); }
+      return;
+    }
+
+    if(state===STATE.PLAY){
+      const n=s.grid;
+      let [r,c]=cursor;
+
+      if(e.key==="Escape"){ state=STATE.MENU; return; }
+      if(e.key.toLowerCase()==="h"){ showPaths=!showPaths; return; }
+      if(e.key==="Backspace"){ e.preventDefault(); undo(); return; }
+      if(e.key==="Enter"){ pick(r,c); return; }
+
+      // AZERTY ZQSD + arrows
+      if(e.key==="ArrowUp" || e.key.toLowerCase()==="z") r=clamp(r-1,0,n-1);
+      else if(e.key==="ArrowDown" || e.key.toLowerCase()==="s") r=clamp(r+1,0,n-1);
+      else if(e.key==="ArrowLeft" || e.key.toLowerCase()==="q") c=clamp(c-1,0,n-1);
+      else if(e.key==="ArrowRight" || e.key.toLowerCase()==="d") c=clamp(c+1,0,n-1);
+
+      cursor=[r,c];
+      return;
+    }
+
+    if(state===STATE.RESULT){
+      if(e.key==="Escape"){ state=STATE.MENU; return; }
+      if(e.key==="Enter"){ startPuzzle(); return; }
+    }
+  });
+
+  canvas.addEventListener("mousedown", (e) => {
+    if(state!==STATE.PLAY) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX-rect.left;
+    const my = e.clientY-rect.top;
+
+    const layout = computeLayout(window.innerWidth, window.innerHeight, s.grid);
+    const hit = hitCell(mx,my,s.grid,layout.origin,layout.cell,layout.gap);
+    if(hit){
+      cursor=hit;
+      pick(hit[0],hit[1]);
+    }
+  });
+
+  // =========================================================
+  // RENDER
+  // =========================================================
+  function roundRect(x,y,w,h,r){
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y, x+w,y+h, r);
+    ctx.arcTo(x+w,y+h, x,y+h, r);
+    ctx.arcTo(x,y+h, x,y, r);
+    ctx.arcTo(x,y, x+w,y, r);
+    ctx.closePath();
+  }
+
+  function fillPanel(rect, color, radius=18){
+    ctx.fillStyle = rgb(color);
+    roundRect(rect.x,rect.y,rect.w,rect.h,radius);
+    ctx.fill();
+    ctx.strokeStyle = rgb([35,45,65]);
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  function draw(){
+    const w=window.innerWidth, h=window.innerHeight;
+    ctx.clearRect(0,0,w,h);
+    ctx.fillStyle = rgb(COL.bg);
+    ctx.fillRect(0,0,w,h);
+
+    ctx.font = "700 34px Consolas, monospace";
+    ctx.fillStyle = rgb(COL.green);
+    ctx.textAlign="left"; ctx.textBaseline="top";
+    ctx.fillText("BREACH PROTOCOL", 16, 16);
+
+    if(state===STATE.MENU){
+      ctx.font = "20px Consolas, monospace";
+      ctx.fillStyle = rgb(COL.dim);
+      ctx.textAlign="center";
+      ctx.fillText("Difficulté (5–15) • Q/D ou ◀/▶ • Entrée pour lancer", w/2, 110);
+
+      const panel={x:220,y:150,w:w-440,h:260};
+      fillPanel(panel, COL.panel);
+      const ss = settingsFromDifficulty(diff);
+
+      ctx.font="700 34px Consolas, monospace";
+      ctx.fillStyle=rgb(COL.text);
+      ctx.fillText("Difficulté : "+diff, w/2, 190);
+      ctx.font="20px Consolas, monospace";
+      ctx.fillStyle=rgb(COL.cyan);
+      ctx.fillText(`Grille : ${ss.grid}×${ss.grid}`, w/2, 240);
+      ctx.fillStyle=rgb(COL.magenta);
+      ctx.fillText(`Buffer : ${ss.buffer}`, w/2, 270);
+      ctx.fillStyle=rgb(COL.yellow);
+      ctx.fillText(`Timer / coup : ${STEP_TIME_LIMIT}s`, w/2, 300);
+
+      ctx.fillStyle=rgb(COL.dim);
+      ctx.fillText("Jeu : ZQSD/flèches • Entrée/clic • Backspace undo • H chemins", w/2, 430);
+      return;
+    }
+
+    if(state===STATE.PLAY){
+      const layout = computeLayout(w,h,s.grid);
+      fillPanel(layout.gridPanel, COL.panel);
+      fillPanel(layout.rightPanel, COL.panel);
+
+      const now = performance.now()/1000;
+      const remaining = Math.max(0, STEP_TIME_LIMIT - (now - stepTimerStart));
+      const timerCol = remaining>3 ? COL.yellow : COL.red;
+
+      ctx.textAlign="left"; ctx.textBaseline="top";
+      ctx.font="18px Consolas, monospace";
+      ctx.fillStyle=rgb(COL.dim);
+      ctx.fillText(`Difficulté ${diff} | Buffer ${buffer.length}/${s.buffer} | Scénario: ${SCEN_LABELS[scenarioId]}`, 16, 56);
+
+      ctx.font="700 34px Consolas, monospace";
+      ctx.fillStyle=rgb(timerCol);
+      ctx.textAlign="right";
+      ctx.fillText(`TIMER: ${remaining.toFixed(1)}s`, w-16, 16);
+
+      // Buffer & status
+      ctx.textAlign="left";
+      ctx.font="20px Consolas, monospace";
+      ctx.fillStyle=rgb(COL.cyan);
+      ctx.fillText("BUFFER", layout.gridPanel.x+16, layout.gridPanel.y+14);
+      ctx.font="18px Consolas, monospace";
+      ctx.fillStyle=rgb(COL.text);
+      ctx.fillText(buffer.length ? buffer.join(" ") : "<empty>", layout.gridPanel.x+16, layout.gridPanel.y+40);
+      ctx.fillStyle=rgb(status.toLowerCase().includes("interdit") ? COL.red : COL.text);
+      ctx.fillText(status, layout.gridPanel.x+16, layout.gridPanel.y+64);
+
+      // Allowed set
+      const step = chosen.length;
+      const last = chosen.length ? chosen[chosen.length-1] : null;
+      const allowed = allowedMoves(s.grid, step, last);
+      const allowedSet = new Set(allowed.map(p=>p[0]+","+p[1]));
+      const chosenSet = new Set(chosen.map(p=>p[0]+","+p[1]));
+
+      // Path sets
+      const pathSets = [];
+      if(showPaths){
+        for(const k in paths){
+          const set = new Set(paths[k].map(p=>p[0]+","+p[1]));
+          pathSets.push([pathColor(k), set]);
+        }
+      }
+
+      // Draw grid
+      ctx.font="20px Consolas, monospace";
+      ctx.fillStyle=rgb(COL.green);
+      ctx.fillText("CODE MATRIX", layout.gridPanel.x+16, layout.gridPanel.y+90);
+
+      for(let r=0;r<s.grid;r++){
+        for(let c=0;c<s.grid;c++){
+          const rect = cellRect(layout.origin, layout.cell, layout.gap, r,c);
+
+          // base cell
+          ctx.fillStyle=rgb(COL.cell);
+          roundRect(rect.x,rect.y,rect.w,rect.h,10); ctx.fill();
+          ctx.strokeStyle=rgb(COL.cellBorder); ctx.lineWidth=2; ctx.stroke();
+
+          // path overlays
+          if(showPaths){
+            for(const [col,set] of pathSets){
+              if(set.has(r+","+c)){
+                ctx.strokeStyle=rgb(col); ctx.lineWidth=2;
+                roundRect(rect.x-2,rect.y-2,rect.w+4,rect.h+4,12); ctx.stroke();
+              }
+            }
+          }
+
+          // allowed outline
+          if(allowedSet.has(r+","+c)){
+            ctx.strokeStyle=rgb(COL.cyan); ctx.lineWidth=3;
+            roundRect(rect.x-4,rect.y-4,rect.w+8,rect.h+8,14); ctx.stroke();
+          }
+
+          // chosen
+          if(chosenSet.has(r+","+c)){
+            ctx.fillStyle="rgb(35,18,45)";
+            roundRect(rect.x,rect.y,rect.w,rect.h,10); ctx.fill();
+            ctx.strokeStyle=rgb(COL.magenta); ctx.lineWidth=3; ctx.stroke();
+          }
+
+          // cursor
+          if(cursor[0]===r && cursor[1]===c){
+            ctx.strokeStyle=rgb(COL.yellow); ctx.lineWidth=3;
+            roundRect(rect.x-6,rect.y-6,rect.w+12,rect.h+12,16); ctx.stroke();
+          }
+
+          // token text
+          ctx.fillStyle=rgb(COL.text);
+          ctx.textAlign="center"; ctx.textBaseline="middle";
+          ctx.fillText(grid[r][c], rect.x+rect.w/2, rect.y+rect.h/2);
+        }
+      }
+
+      // Right panel puzzles
+      ctx.textAlign="left"; ctx.textBaseline="top";
+      ctx.font="20px Consolas, monospace";
+      ctx.fillStyle=rgb(COL.green);
+      ctx.fillText("PUZZLES À UPLOAD", layout.rightPanel.x+16, layout.rightPanel.y+16);
+
+      const res = scoreAndDone(buffer, puzzles);
+      ctx.font="18px Consolas, monospace";
+      ctx.fillStyle=rgb(COL.dim);
+      const doneTxt = res.done.length ? res.done.map(i=>"P"+(i+1)).join(", ") : "aucun";
+      ctx.fillText(`Score: ${res.score} | Validés: ${doneTxt}`, layout.rightPanel.x+16, layout.rightPanel.y+44);
+
+      let y = layout.rightPanel.y+78;
+      puzzles.forEach((seq,i)=>{
+        const isDone = bufferContains(buffer, seq);
+        ctx.fillStyle=rgb(isDone ? COL.magenta : COL.text);
+        const prefix = isDone ? "✓" : "•";
+        ctx.fillText(`${prefix} Puzzle ${i+1}: ${seq.join(" ")}`, layout.rightPanel.x+16, y);
+        y += 28;
+      });
+
+      // Legend
+      y += 10;
+      ctx.fillStyle=rgb(COL.cyan);
+      ctx.fillText("Chemins (H)", layout.rightPanel.x+16, y);
+      y += 26;
+
+      const legend = [];
+      if(paths.P1) legend.push(["Chemin P1", COL.pathRed]);
+      if(paths.P12) legend.push(["Chemin P1+P2", COL.pathGreen]);
+      if(paths.P2) legend.push(["Chemin P2", COL.pathBlue]);
+      if(paths.P2ONLY) legend.push(["Chemin P2 (sans P1)", COL.pathBlue]);
+      Object.keys(paths).filter(k=>k.startsWith("EXTRA")).sort().forEach(k=>{
+        legend.push(["Chemin "+k, pathColor(k)]);
+      });
+
+      legend.slice(0,10).forEach(([name,col])=>{
+        ctx.fillStyle=rgb(col);
+        ctx.fillText("■ "+name, layout.rightPanel.x+16, y);
+        y += 22;
+      });
+
+      // timer check
+      if(remaining <= 0){
+        status = "TIMEOUT — upload interrompu.";
+        finishPuzzle();
+      }
+      return;
+    }
+
+    if(state===STATE.RESULT){
+      const res = scoreAndDone(buffer, puzzles);
+      ctx.textAlign="center"; ctx.textBaseline="top";
+      ctx.font="700 34px Consolas, monospace";
+      ctx.fillStyle=rgb(COL.green);
+      ctx.fillText("UPLOAD RESULT", w/2, 170);
+      ctx.fillStyle=rgb(COL.text);
+      ctx.fillText("SCORE: "+res.score, w/2, 230);
+      ctx.font="20px Consolas, monospace";
+      ctx.fillStyle=rgb(COL.dim);
+      const doneTxt = res.done.length ? res.done.map(i=>"Puzzle "+(i+1)).join(", ") : "aucun";
+      ctx.fillText("Validés: "+doneTxt, w/2, 280);
+      ctx.fillText("Entrée: rejouer | ESC: menu", w/2, 340);
+      return;
+    }
+  }
+
+  function loop(){
+    draw();
+    requestAnimationFrame(loop);
+  }
+  loop();
+})();
+</script>
+</body>
+</html>
