@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Breach Protocol (JS) — Seed + Série</title>
+  <title>Breach Protocol (JS) — V4-Beta</title>
   <style>
     html, body {
       height:100%;
@@ -21,10 +21,11 @@
       position:fixed; left:16px; bottom:16px; z-index:10;
       padding:10px 12px; border-radius:12px;
       border:1px solid rgba(0,255,160,.35);
-      background:rgba(16,20,28,.8);
+      background:rgba(16,20,28,.80);
       color:#dce6f5; cursor:pointer;
       backdrop-filter: blur(6px);
       box-shadow: 0 0 18px rgba(0,255,160,.10);
+      user-select:none;
     }
     #btnSound:hover{ border-color: rgba(0,255,160,.65); }
   </style>
@@ -50,6 +51,11 @@
   <source src="audio/fail.mp3" type="audio/mpeg">
 </audio>
 
+<!-- NEW: click/button SFX -->
+<audio id="sfxClick" preload="auto">
+  <source src="audio/click.mp3" type="audio/mpeg">
+</audio>
+
 <script>
 (() => {
   // =========================================================
@@ -57,6 +63,12 @@
   // =========================================================
   const TOKENS = ["BD","55","1C","E9","7A","FF","0A","9C","DA","6B","2E","F1"];
   const FPS = 60;
+
+  // Optional animated menu background (images)
+  // Put files in /bg/ : menu_0001.jpg ... menu_0012.jpg
+  const MENU_BG_ENABLED = true;
+  const MENU_BG_FRAMES = 12; // change if needed
+  const MENU_BG_FPS = 6;     // animation speed
 
   const COL = {
     bg0: [7,9,15],
@@ -148,14 +160,16 @@
     return decodeURIComponent(escape(atob(str)));
   }
 
-  function makeSeedPayload({ seedText, diff, series, timeLimit, bonusMode }) {
+  // v2 -> still "BP2." but we add undoAllowed (backward compatible)
+  function makeSeedPayload({ seedText, diff, series, timeLimit, bonusMode, undoAllowed }) {
     return {
       v: 2,
       seedText: seedText || "",
       diff,
       series,
       timeLimit,
-      bonusMode
+      bonusMode,
+      undoAllowed
     };
   }
 
@@ -177,7 +191,6 @@
   }
 
   function randomSeedText() {
-    // petit seed lisible (pas crypto, juste pratique)
     const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     let s = "";
     for (let i=0;i<10;i++) s += alphabet[Math.floor(Math.random()*alphabet.length)];
@@ -191,12 +204,14 @@
   const musicGame = document.getElementById("musicGame");
   const sfxSuccess = document.getElementById("sfxSuccess");
   const sfxFail = document.getElementById("sfxFail");
+  const sfxClick = document.getElementById("sfxClick");
   const btnSound = document.getElementById("btnSound");
 
   musicMenu.volume = 0.35;
   musicGame.volume = 0.35;
   sfxSuccess.volume = 0.85;
   sfxFail.volume = 0.85;
+  sfxClick.volume = 0.60;
 
   let audioUnlocked = false;
   let currentMusic = null;
@@ -219,6 +234,16 @@
     if(!audioUnlocked) return;
     try { el.currentTime = 0; } catch {}
     safePlay(el);
+  }
+
+  // Click anti-spam
+  let lastClickSfxAt = 0;
+  function playClick(){
+    if(!audioUnlocked) return;
+    const t = performance.now();
+    if (t - lastClickSfxAt < 45) return;
+    lastClickSfxAt = t;
+    playSfx(sfxClick);
   }
 
   function unlockAudioOnce(){
@@ -252,6 +277,26 @@
   function rgb(a){ return `rgb(${a[0]},${a[1]},${a[2]})`; }
   function rgba(a, alpha){ return `rgba(${a[0]},${a[1]},${a[2]},${alpha})`; }
   function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+
+  // =========================================================
+  // OPTIONAL: animated menu background frames
+  // =========================================================
+  const menuBg = [];
+  let menuBgReady = false;
+  if (MENU_BG_ENABLED) {
+    for (let i=1;i<=MENU_BG_FRAMES;i++){
+      const img = new Image();
+      img.src = `bg/menu_${String(i).padStart(4,"0")}.jpg`;
+      img.onload = () => {
+        if(menuBg.filter(x=>x.complete).length === MENU_BG_FRAMES) menuBgReady = true;
+      };
+      img.onerror = () => {
+        // if missing frames, we simply disable
+        menuBgReady = false;
+      };
+      menuBg.push(img);
+    }
+  }
 
   // =========================================================
   // GAME LOGIC
@@ -447,12 +492,10 @@
     ctx.font = `700 ${size}px Consolas, monospace`;
     ctx.textAlign = align;
     ctx.textBaseline = "top";
-    // glow
     ctx.shadowColor = rgba(color, 0.55);
     ctx.shadowBlur = 18;
     ctx.fillStyle = rgb(color);
     ctx.fillText(text, x, y);
-    // crisp layer
     ctx.shadowBlur = 0;
     ctx.fillStyle = rgb(color);
     ctx.fillText(text, x, y);
@@ -460,7 +503,6 @@
   }
 
   function fillPanel(rect, baseColor, accentColor=COL.green){
-    // gradient fill
     const g = ctx.createLinearGradient(rect.x, rect.y, rect.x+rect.w, rect.y+rect.h);
     g.addColorStop(0, `rgba(${baseColor[0]},${baseColor[1]},${baseColor[2]},0.92)`);
     g.addColorStop(1, `rgba(${COL.panel2[0]},${COL.panel2[1]},${COL.panel2[2]},0.92)`);
@@ -468,12 +510,10 @@
     roundRect(rect.x,rect.y,rect.w,rect.h,18);
     ctx.fill();
 
-    // border
     ctx.lineWidth = 2;
     ctx.strokeStyle = `rgba(${accentColor[0]},${accentColor[1]},${accentColor[2]},0.25)`;
     ctx.stroke();
 
-    // inner border
     ctx.lineWidth = 1;
     ctx.strokeStyle = `rgba(255,255,255,0.06)`;
     roundRect(rect.x+3,rect.y+3,rect.w-6,rect.h-6,16);
@@ -491,7 +531,6 @@
   }
 
   function drawGrain(w,h){
-    // grain ultra léger (pas de perfs killer)
     ctx.save();
     ctx.globalAlpha = 0.05;
     ctx.fillStyle = "white";
@@ -504,8 +543,32 @@
     ctx.restore();
   }
 
+  function drawMenuBackgroundFrames(w,h){
+    if(!MENU_BG_ENABLED) return;
+    if(state !== STATE.MENU) return;
+    if(!menuBgReady) return;
+
+    const t = performance.now()/1000;
+    const idx = Math.floor(t * MENU_BG_FPS) % MENU_BG_FRAMES;
+    const img = menuBg[idx];
+    if(!img || !img.complete) return;
+
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    if(!iw || !ih) return;
+
+    const scale = Math.max(w/iw, h/ih);
+    const dw = iw*scale, dh = ih*scale;
+    const dx = (w - dw)/2, dy = (h - dh)/2;
+
+    ctx.save();
+    ctx.globalAlpha = 0.22;
+    ctx.drawImage(img, dx, dy, dw, dh);
+    ctx.restore();
+  }
+
   // =========================================================
-  // STATE / MENU OPTIONS (Seed + Série + Temps + Bonus/Malus)
+  // STATE / MENU OPTIONS (Seed + Série + Temps + Bonus/Malus + Undo)
   // =========================================================
   const STATE = { MENU:"menu", PLAY:"play", RESULT:"result" };
   let state = STATE.MENU;
@@ -515,8 +578,9 @@
   let optSeries = 3;          // nombre de hacks à enchaîner
   let optTimeLimit = 15;      // temps par sélection
   let optBonusMode = "none";  // none|bonus|malus
+  let optUndoAllowed = true;  // NEW: retour arrière autorisé ?
   let optSeedText = randomSeedText(); // seed lisible
-  let shareSeed = "";         // seed complète à partager (BP2....)
+  let shareSeed = "";         // seed complète à partager (BP2.)
 
   // Run
   let runIndex = 0;           // hack actuel dans la série
@@ -535,7 +599,6 @@
   let lastHackSuccess = false;
 
   function effectiveTimeLimit(){
-    // temps par sélection = base + bonus/malus
     return clamp(optTimeLimit + (BONUS_TIME_DELTA[optBonusMode] || 0), 3, 60);
   }
 
@@ -552,7 +615,8 @@
       diff: optDiff,
       series: optSeries,
       timeLimit: optTimeLimit,
-      bonusMode: optBonusMode
+      bonusMode: optBonusMode,
+      undoAllowed: optUndoAllowed
     });
     shareSeed = encodeSeed(payload);
   }
@@ -567,13 +631,13 @@
     optSeries = clamp(decoded.series ?? 1, 1, 20);
     optTimeLimit = clamp(decoded.timeLimit ?? 15, 3, 60);
     optBonusMode = (decoded.bonusMode in BONUS_LABELS) ? decoded.bonusMode : "none";
+    optUndoAllowed = (decoded.undoAllowed ?? true);
 
     updateShareSeed();
     return true;
   }
 
   function startRun(){
-    // Initialise la série selon seed
     updateShareSeed();
     runIndex = 0;
     runScoreTotal = 0;
@@ -585,9 +649,9 @@
     runIndex = i;
     s = settingsFromDifficulty(optDiff);
 
-    // RNG stable : seedText + options + index
-    // => même série = mêmes hacks, mêmes puzzles, mêmes scénarios
-    const seedForThisHack = `BP2|${optSeedText}|d=${optDiff}|series=${optSeries}|t=${optTimeLimit}|bm=${optBonusMode}|i=${i}`;
+    // RNG stable : seedText + options + index (inclut undoAllowed)
+    const seedForThisHack =
+      `BP2|${optSeedText}|d=${optDiff}|series=${optSeries}|t=${optTimeLimit}|bm=${optBonusMode}|undo=${optUndoAllowed?1:0}|i=${i}`;
     rng = makeRngFromSeedString(seedForThisHack);
 
     grid = genGrid(rng, s.grid);
@@ -618,9 +682,10 @@
       status = "Coup interdit (ligne 1 puis alternance colonne/ligne).";
       return;
     }
+    playClick(); // NEW: click SFX on valid selection
     chosen.push([r,c]);
     buffer.push(grid[r][c]);
-    stepTimerStart = performance.now()/1000;
+    stepTimerStart = performance.now()/1000; // reset timer ONLY on selection
     status = "Sélection validée.";
 
     if(buffer.length >= s.buffer){
@@ -629,9 +694,18 @@
   }
 
   function undo(){
-    if(!chosen.length){ status="Rien à annuler."; return; }
-    chosen.pop(); buffer.pop();
-    stepTimerStart = performance.now()/1000;
+    if(!optUndoAllowed){
+      status="Retour arrière désactivé.";
+      return;
+    }
+    if(!chosen.length){
+      status="Rien à annuler.";
+      return;
+    }
+    playClick(); // NEW: click SFX on undo
+    chosen.pop();
+    buffer.pop();
+    // IMPORTANT: do NOT reset stepTimerStart (no free time)
     status="Annulation effectuée.";
   }
 
@@ -639,7 +713,6 @@
     const res = scoreAndDone(buffer, puzzles);
     lastHackScore = res.score;
 
-    // réussite si au moins 1 puzzle validé et pas timeout
     const success = (!timeoutFlag && res.done.length > 0);
     lastHackSuccess = success;
 
@@ -655,7 +728,6 @@
     if(runIndex + 1 < optSeries){
       startHackAtIndex(runIndex + 1);
     } else {
-      // fin de série => retour menu avec récap dans status
       state = STATE.MENU;
       status = `Série terminée : ${runSuccessCount}/${optSeries} réussites | Score total : ${runScoreTotal}`;
       syncMusicToState();
@@ -680,37 +752,47 @@
   window.addEventListener("keydown", (e) => {
     unlockAudioOnce();
 
-    // Easter egg routes toggle: "Equal" or "=" or "+" or ")"
+    // Easter egg routes toggle: "=" or "+" etc
     if(state === STATE.PLAY){
       if (e.code === "Equal" || e.key === "=" || e.key === "+" || e.key === ")") {
         showPaths = !showPaths;
+        playClick(); // tiny feedback
         return;
       }
     }
 
     if(state === STATE.MENU){
       const k = e.key.toLowerCase();
+      let changed = false;
 
       // Naviguer options
-      if(e.key === "ArrowLeft" || k === "q" || k === "a") optDiff = clamp(optDiff - 1, 5, 15);
-      if(e.key === "ArrowRight" || k === "d") optDiff = clamp(optDiff + 1, 5, 15);
+      if(e.key === "ArrowLeft" || k === "q" || k === "a") { optDiff = clamp(optDiff - 1, 5, 15); changed = true; }
+      if(e.key === "ArrowRight" || k === "d") { optDiff = clamp(optDiff + 1, 5, 15); changed = true; }
 
       // Série : haut/bas
-      if(e.key === "ArrowUp" || k === "z" || k === "w") optSeries = clamp(optSeries + 1, 1, 20);
-      if(e.key === "ArrowDown" || k === "s") optSeries = clamp(optSeries - 1, 1, 20);
+      if(e.key === "ArrowUp" || k === "z" || k === "w") { optSeries = clamp(optSeries + 1, 1, 20); changed = true; }
+      if(e.key === "ArrowDown" || k === "s") { optSeries = clamp(optSeries - 1, 1, 20); changed = true; }
 
       // Temps : PageUp/PageDown ou +/- (pratique)
-      if(e.key === "PageUp" || e.key === "+") optTimeLimit = clamp(optTimeLimit + 1, 3, 60);
-      if(e.key === "PageDown" || e.key === "-") optTimeLimit = clamp(optTimeLimit - 1, 3, 60);
+      if(e.key === "PageUp" || e.key === "+") { optTimeLimit = clamp(optTimeLimit + 1, 3, 60); changed = true; }
+      if(e.key === "PageDown" || e.key === "-") { optTimeLimit = clamp(optTimeLimit - 1, 3, 60); changed = true; }
 
       // Bonus/malus : B
       if(k === "b"){
         optBonusMode = (optBonusMode === "none") ? "bonus" : (optBonusMode === "bonus") ? "malus" : "none";
+        changed = true;
+      }
+
+      // NEW: Undo toggle : U
+      if(k === "u"){
+        optUndoAllowed = !optUndoAllowed;
+        changed = true;
       }
 
       // Seed random : R
       if(k === "r"){
         optSeedText = randomSeedText();
+        changed = true;
       }
 
       // Coller seed complète : V (ouvre prompt)
@@ -718,8 +800,10 @@
         const pasted = prompt("Colle une seed complète (BP2....) puis OK :");
         if(pasted && applySeedString(pasted.trim())){
           status = "Seed appliquée.";
+          playClick();
         } else if(pasted) {
           status = "Seed invalide.";
+          playClick();
         }
       }
 
@@ -728,18 +812,24 @@
         updateShareSeed();
         navigator.clipboard?.writeText(shareSeed).then(()=>{
           status = "Seed copiée dans le presse-papiers.";
+          playClick();
         }).catch(()=>{
           status = "Copie impossible (navigateur).";
+          playClick();
         });
       }
 
       // Lancer : Entrée
       if(e.key === "Enter"){
         updateShareSeed();
+        playClick();
         startRun();
       }
 
-      updateShareSeed();
+      if(changed){
+        playClick();
+        updateShareSeed();
+      }
       syncMusicToState();
       return;
     }
@@ -749,12 +839,11 @@
       let [r,c]=cursor;
       const k = e.key.toLowerCase();
 
-      if(e.key==="Escape"){ state=STATE.MENU; syncMusicToState(); return; }
+      if(e.key==="Escape"){ playClick(); state=STATE.MENU; syncMusicToState(); return; }
       if(e.key==="Backspace"){ e.preventDefault(); undo(); return; }
       if(e.key==="Enter"){ pick(r,c); return; }
 
-      // AZERTY: ZQSD + arrows
-      // QWERTY: WASD + arrows
+      // Movement (silent) – or enable click if you want
       if(e.key==="ArrowUp" || k==="z" || k==="w") r=clamp(r-1,0,n-1);
       else if(e.key==="ArrowDown" || k==="s") r=clamp(r+1,0,n-1);
       else if(e.key==="ArrowLeft" || k==="q" || k==="a") c=clamp(c-1,0,n-1);
@@ -765,8 +854,8 @@
     }
 
     if(state === STATE.RESULT){
-      if(e.key === "Escape"){ state=STATE.MENU; syncMusicToState(); return; }
-      if(e.key === "Enter"){ nextHackOrEnd(); return; }
+      if(e.key === "Escape"){ playClick(); state=STATE.MENU; syncMusicToState(); return; }
+      if(e.key === "Enter"){ playClick(); nextHackOrEnd(); return; }
     }
   });
 
@@ -782,7 +871,7 @@
     const hit = hitCell(mx,my,s.grid,layout.origin,layout.cell,layout.gap);
     if(hit){
       cursor=hit;
-      pick(hit[0],hit[1]);
+      pick(hit[0],hit[1]); // pick already plays click sound
     }
   });
 
@@ -795,6 +884,9 @@
     g.addColorStop(1, rgb(COL.bg0));
     ctx.fillStyle = g;
     ctx.fillRect(0,0,w,h);
+
+    // Optional animated menu bg frames (behind UI)
+    drawMenuBackgroundFrames(w,h);
 
     // neon accent bar
     ctx.fillStyle = "rgba(0,255,160,0.06)";
@@ -814,21 +906,17 @@
     if(state === STATE.MENU){
       syncMusicToState();
 
-      // Header small
       ctx.font = "18px Consolas, monospace";
       ctx.fillStyle = rgb(COL.dim);
       ctx.textAlign = "left";
       ctx.textBaseline = "top";
       ctx.fillText(status || "Menu : configure la session.", 16, 60);
 
-      // Main panel
       const panel = {x: 150, y: 100, w: w-300, h: h-200};
       fillPanel(panel, COL.panel, COL.green);
 
-      // Title
       neonText("PARAMÈTRES DE SESSION", panel.x + panel.w/2, panel.y + 26, COL.cyan, 26, "center");
 
-      // Left column text
       ctx.font = "20px Consolas, monospace";
       ctx.fillStyle = rgb(COL.text);
       ctx.textAlign = "left";
@@ -836,31 +924,40 @@
       let y = panel.y + 90;
       const xL = panel.x + 34;
 
+      // NOTE: you said you manually moved xL+240 -> xL+275 in V3-Fix.
+      // Keep it if you like; here we use +275 to match your V3-Fix.
+      const xV = xL + 275;
+
       ctx.fillStyle = rgb(COL.cyan);
       ctx.fillText("Difficulté", xL, y);
       ctx.fillStyle = rgb(COL.text);
-      ctx.fillText(String(optDiff), xL + 240, y); y += 34;
+      ctx.fillText(String(optDiff), xV, y); y += 34;
 
       ctx.fillStyle = rgb(COL.cyan);
       ctx.fillText("Série (nombre de hacks)", xL, y);
       ctx.fillStyle = rgb(COL.text);
-      ctx.fillText(String(optSeries), xL + 240, y); y += 34;
+      ctx.fillText(String(optSeries), xV, y); y += 34;
 
       ctx.fillStyle = rgb(COL.cyan);
       ctx.fillText("Temps par sélection (s)", xL, y);
       ctx.fillStyle = rgb(COL.text);
-      ctx.fillText(String(optTimeLimit), xL + 240, y); y += 34;
+      ctx.fillText(String(optTimeLimit), xV, y); y += 34;
 
       ctx.fillStyle = rgb(COL.cyan);
       ctx.fillText("Bonus / Malus", xL, y);
       ctx.fillStyle = rgb(COL.text);
-      ctx.fillText(BONUS_LABELS[optBonusMode], xL + 240, y); y += 44;
+      ctx.fillText(BONUS_LABELS[optBonusMode], xV, y); y += 34;
+
+      // NEW: Undo option row
+      ctx.fillStyle = rgb(COL.cyan);
+      ctx.fillText("Retour arrière", xL, y);
+      ctx.fillStyle = rgb(COL.text);
+      ctx.fillText(optUndoAllowed ? "Autorisé" : "Désactivé", xV, y); y += 44;
 
       // Seed block
       ctx.fillStyle = rgb(COL.cyan);
       ctx.fillText("Seed partagée", xL, y); y += 26;
 
-      // seed display box
       const box = {x:xL, y:y, w: panel.w - 68, h: 84};
       fillPanel(box, COL.panel2, COL.cyan);
 
@@ -878,8 +975,8 @@
       ctx.fillStyle = rgb(COL.dim);
       ctx.fillText("Contrôles (menu)", xL, y); y += 22;
       ctx.fillText("← → (ou Q/D/A) : difficulté | ↑ ↓ : série | PageUp/PageDown ou +/- : temps", xL, y); y += 20;
-      ctx.fillText("B : bonus/malus | R : seed aléatoire | V : coller seed complète | C : copier seed", xL, y); y += 20;
-      ctx.fillText("Entrée : démarrer la série", xL, y);
+      ctx.fillText("B : bonus/malus | U : retour arrière ON/OFF | R : seed aléatoire", xL, y); y += 20;
+      ctx.fillText("V : coller seed complète | C : copier seed | Entrée : démarrer la série", xL, y); y += 20;
 
       return;
     }
@@ -931,7 +1028,7 @@
       const allowedSet = new Set(allowed.map(p=>p[0]+","+p[1]));
       const chosenSet = new Set(chosen.map(p=>p[0]+","+p[1]));
 
-      // Path sets
+      // Path sets (easter egg)
       const pathSets = [];
       if(showPaths){
         for(const k in paths){
@@ -950,7 +1047,6 @@
         for(let c=0;c<s.grid;c++){
           const rect = cellRect(layout.origin, layout.cell, layout.gap, r,c);
 
-          // base cell
           ctx.fillStyle=rgb(COL.cell);
           roundRect(rect.x,rect.y,rect.w,rect.h,10); ctx.fill();
 
