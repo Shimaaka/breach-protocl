@@ -3,11 +3,30 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Breach Protocol (JS)</title>
+  <title>Breach Protocol (JS) — Seed + Série</title>
   <style>
-    html, body { height:100%; margin:0; background:#0a0c10; color:#dce6f5; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    #wrap { display:flex; height:100%; }
+    html, body {
+      height:100%;
+      margin:0;
+      background:#07090f;
+      color:#dce6f5;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      overflow:hidden;
+    }
+    #wrap { height:100%; }
     canvas { display:block; width:100%; height:100%; }
+
+    /* Bouton audio discret */
+    #btnSound{
+      position:fixed; left:16px; bottom:16px; z-index:10;
+      padding:10px 12px; border-radius:12px;
+      border:1px solid rgba(0,255,160,.35);
+      background:rgba(16,20,28,.8);
+      color:#dce6f5; cursor:pointer;
+      backdrop-filter: blur(6px);
+      box-shadow: 0 0 18px rgba(0,255,160,.10);
+    }
+    #btnSound:hover{ border-color: rgba(0,255,160,.65); }
   </style>
 </head>
 <body>
@@ -15,8 +34,9 @@
   <canvas id="c"></canvas>
 </div>
 
+<button id="btnSound">Activer le son</button>
+
 <!-- ===================== AUDIO ===================== -->
-<!-- Mets tes fichiers dans /audio/ (même repo GitHub Pages) -->
 <audio id="musicMenu" loop preload="auto">
   <source src="audio/menu.mp3" type="audio/mpeg">
 </audio>
@@ -33,28 +53,30 @@
 <script>
 (() => {
   // =========================================================
-  // CONFIG
+  // CONFIG / THEME
   // =========================================================
   const TOKENS = ["BD","55","1C","E9","7A","FF","0A","9C","DA","6B","2E","F1"];
-  const STEP_TIME_LIMIT = 15.0;
+  const FPS = 60;
 
-  // Colors
   const COL = {
-    bg: [10,12,16],
-    panel:[18,22,30],
-    text:[220,230,245],
-    dim:[130,145,170],
-    green:[0,255,160],
-    cyan:[0,200,255],
-    yellow:[255,220,80],
-    magenta:[220,120,255],
-    red:[255,90,90],
-    cell:[26,32,44],
-    cellBorder:[50,60,80],
-    pathRed:[255,80,80],
-    pathBlue:[80,140,255],
-    pathGreen:[0,255,160],
-    extras:[
+    bg0: [7,9,15],
+    bg1: [10,12,20],
+    panel: [18,22,30],
+    panel2: [14,18,26],
+    text: [220,230,245],
+    dim: [130,145,170],
+    green: [0,255,160],
+    cyan: [0,200,255],
+    yellow: [255,220,80],
+    magenta: [220,120,255],
+    red: [255,90,90],
+    cell: [26,32,44],
+    cellBorder: [50,60,80],
+
+    pathRed: [255,80,80],
+    pathBlue: [80,140,255],
+    pathGreen: [0,255,160],
+    extras: [
       [255,220,80],
       [220,120,255],
       [0,200,255],
@@ -63,68 +85,152 @@
     ]
   };
 
+  const SCEN_LABELS = [
+    "Choix : Puzzle 1 ou Puzzle 2",
+    "Puzzle 1 + Puzzle 2 possible",
+    "Priorité Puzzle 2 (Puzzle 2 sans Puzzle 1 possible)",
+  ];
+
+  const BONUS_LABELS = {
+    none: "Aucun",
+    bonus: "Bonus (+2s par sélection)",
+    malus: "Malus (-2s par sélection)"
+  };
+
+  const BONUS_TIME_DELTA = { none: 0, bonus: +2, malus: -2 };
+
   // =========================================================
-  // AUDIO ENGINE (autoplay-safe)
+  // PRNG (seeded) — Mulberry32
+  // =========================================================
+  function xmur3(str) {
+    let h = 1779033703 ^ str.length;
+    for (let i = 0; i < str.length; i++) {
+      h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
+      h = (h << 13) | (h >>> 19);
+    }
+    return function() {
+      h = Math.imul(h ^ (h >>> 16), 2246822507);
+      h = Math.imul(h ^ (h >>> 13), 3266489909);
+      h ^= h >>> 16;
+      return h >>> 0;
+    };
+  }
+  function mulberry32(a) {
+    return function() {
+      let t = a += 0x6D2B79F5;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function makeRngFromSeedString(seedStr) {
+    const seedFn = xmur3(seedStr);
+    return mulberry32(seedFn());
+  }
+  function randInt(rng, min, max) {
+    return Math.floor(rng() * (max - min + 1)) + min;
+  }
+  function choice(rng, arr) {
+    return arr[Math.floor(rng() * arr.length)];
+  }
+
+  // =========================================================
+  // SEED PACKING (simple, partageable)
+  // =========================================================
+  // Seed = base64url(JSON)
+  function b64urlEncode(str) {
+    return btoa(unescape(encodeURIComponent(str)))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  }
+  function b64urlDecode(str) {
+    str = str.replace(/-/g, "+").replace(/_/g, "/");
+    while (str.length % 4) str += "=";
+    return decodeURIComponent(escape(atob(str)));
+  }
+
+  function makeSeedPayload({ seedText, diff, series, timeLimit, bonusMode }) {
+    return {
+      v: 2,
+      seedText: seedText || "",
+      diff,
+      series,
+      timeLimit,
+      bonusMode
+    };
+  }
+
+  function encodeSeed(payload) {
+    return "BP2." + b64urlEncode(JSON.stringify(payload));
+  }
+
+  function decodeSeed(seed) {
+    if (!seed || typeof seed !== "string") return null;
+    if (!seed.startsWith("BP2.")) return null;
+    try {
+      const json = b64urlDecode(seed.slice(4));
+      const obj = JSON.parse(json);
+      if (!obj || obj.v !== 2) return null;
+      return obj;
+    } catch {
+      return null;
+    }
+  }
+
+  function randomSeedText() {
+    // petit seed lisible (pas crypto, juste pratique)
+    const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let s = "";
+    for (let i=0;i<10;i++) s += alphabet[Math.floor(Math.random()*alphabet.length)];
+    return s;
+  }
+
+  // =========================================================
+  // AUDIO (autoplay-safe)
   // =========================================================
   const musicMenu = document.getElementById("musicMenu");
   const musicGame = document.getElementById("musicGame");
   const sfxSuccess = document.getElementById("sfxSuccess");
   const sfxFail = document.getElementById("sfxFail");
+  const btnSound = document.getElementById("btnSound");
 
-  // volumes (ajuste comme tu veux)
   musicMenu.volume = 0.35;
   musicGame.volume = 0.35;
-  sfxSuccess.volume = 0.8;
-  sfxFail.volume = 0.8;
+  sfxSuccess.volume = 0.85;
+  sfxFail.volume = 0.85;
 
   let audioUnlocked = false;
   let currentMusic = null;
 
-  function unlockAudioOnce() {
-    if (audioUnlocked) return;
+  function safePlay(el){
+    if(!audioUnlocked) return;
+    const p = el.play();
+    if(p && p.catch) p.catch(()=>{});
+  }
+  function safePause(el){ el.pause(); }
+
+  function setMusic(next){
+    if(currentMusic === next) return;
+    if(currentMusic) safePause(currentMusic);
+    currentMusic = next;
+    if(currentMusic) safePlay(currentMusic);
+  }
+
+  function playSfx(el){
+    if(!audioUnlocked) return;
+    try { el.currentTime = 0; } catch {}
+    safePlay(el);
+  }
+
+  function unlockAudioOnce(){
+    if(audioUnlocked) return;
     audioUnlocked = true;
-    // tenter de lancer la musique du menu (si on est au menu)
+    btnSound.textContent = "Son activé";
     syncMusicToState();
   }
 
-  function safePlay(audioEl) {
-    if (!audioUnlocked) return;
-    const p = audioEl.play();
-    if (p && typeof p.catch === "function") p.catch(()=>{});
-  }
-
-  function safePause(audioEl) {
-    audioEl.pause();
-  }
-
-  function stopMusic(audioEl) {
-    audioEl.pause();
-    try { audioEl.currentTime = 0; } catch {}
-  }
-
-  function setMusic(next) {
-    if (currentMusic === next) return;
-    if (currentMusic) safePause(currentMusic);
-    currentMusic = next;
-    if (currentMusic) safePlay(currentMusic);
-  }
-
-  function playSfx(sfxEl) {
-    if (!audioUnlocked) return;
-    try { sfxEl.currentTime = 0; } catch {}
-    safePlay(sfxEl);
-  }
-
-  function syncMusicToState() {
-    if (!audioUnlocked) return;
-    if (state === STATE.MENU) setMusic(musicMenu);
-    else if (state === STATE.PLAY) setMusic(musicGame);
-    else if (state === STATE.RESULT) setMusic(musicMenu); // résultat = ambiance menu (au choix)
-  }
-
-  // Débloque l'audio au 1er geste utilisateur (n'importe lequel)
-  window.addEventListener("pointerdown", unlockAudioOnce, { once: true });
-  window.addEventListener("keydown", unlockAudioOnce, { once: true });
+  btnSound.addEventListener("click", unlockAudioOnce);
+  window.addEventListener("pointerdown", unlockAudioOnce, { once:true });
+  window.addEventListener("keydown", unlockAudioOnce, { once:true });
 
   // =========================================================
   // CANVAS
@@ -144,6 +250,7 @@
   resize();
 
   function rgb(a){ return `rgb(${a[0]},${a[1]},${a[2]})`; }
+  function rgba(a, alpha){ return `rgba(${a[0]},${a[1]},${a[2]},${alpha})`; }
   function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
 
   // =========================================================
@@ -157,11 +264,11 @@
     return { d, grid, buffer, extraPaths };
   }
 
-  function genGrid(n){
+  function genGrid(rng, n){
     const g = [];
     for(let r=0;r<n;r++){
       const row=[];
-      for(let c=0;c<n;c++) row.push(TOKENS[Math.floor(Math.random()*TOKENS.length)]);
+      for(let c=0;c<n;c++) row.push(choice(rng, TOKENS));
       g.push(row);
     }
     return g;
@@ -207,11 +314,12 @@
     return {score, done};
   }
 
-  function generateValidPath(n, length){
+  function generateValidPath(rng, n, length){
     const used = new Set();
     const path=[];
-    let r=0, c=Math.floor(Math.random()*n);
+    let r=0, c=randInt(rng, 0, n-1);
     path.push([r,c]); used.add(r+","+c);
+
     for(let step=1; step<length; step++){
       let candidates=[];
       if(step%2===1){
@@ -223,7 +331,7 @@
       }
       const unused = candidates.filter(p=>!used.has(p[0]+","+p[1]));
       const pickFrom = unused.length?unused:candidates;
-      const nxt = pickFrom[Math.floor(Math.random()*pickFrom.length)];
+      const nxt = pickFrom[Math.floor(rng() * pickFrom.length)];
       path.push(nxt);
       used.add(nxt[0]+","+nxt[1]);
     }
@@ -234,51 +342,45 @@
     return path.map(([r,c])=>grid[r][c]);
   }
 
-  function makePuzzleFromTokens(tokens, minLen=3, maxLen=6){
+  function makePuzzleFromTokens(rng, tokens, minLen=3, maxLen=6){
     const L=tokens.length;
     maxLen = Math.min(maxLen, L);
     minLen = Math.min(minLen, maxLen);
-    const len = Math.floor(Math.random()*(maxLen-minLen+1))+minLen;
-    const start = Math.floor(Math.random()*(L-len+1));
+    const len = randInt(rng, minLen, maxLen);
+    const start = randInt(rng, 0, L - len);
     return tokens.slice(start,start+len);
   }
 
-  const SCEN_LABELS = [
-    "Choix : Puzzle 1 ou Puzzle 2",
-    "Puzzle 1 + Puzzle 2 possible",
-    "Priorité Puzzle 2 (Puzzle 2 sans Puzzle 1 possible)",
-  ];
-
-  function generateScenario(grid, s){
+  function generateScenario(rng, grid, s){
     const n=s.grid, buf=s.buffer;
-    const scenarioId = [0,1,2][Math.floor(Math.random()*3)];
+    const scenarioId = [0,1,2][randInt(rng,0,2)];
     const paths = {};
 
-    const p1 = generateValidPath(n, buf);
-    const p2 = generateValidPath(n, buf);
+    const p1 = generateValidPath(rng, n, buf);
+    const p2 = generateValidPath(rng, n, buf);
     const t1 = tokensOnPath(grid, p1);
     const t2 = tokensOnPath(grid, p2);
 
-    let puzzle1 = makePuzzleFromTokens(t1, 3, Math.min(6,buf));
-    let puzzle2 = makePuzzleFromTokens(t2, 3, Math.min(6,buf));
+    let puzzle1 = makePuzzleFromTokens(rng, t1, 3, Math.min(6,buf));
+    let puzzle2 = makePuzzleFromTokens(rng, t2, 3, Math.min(6,buf));
 
     paths.P1 = p1;
     paths.P2 = p2;
 
     if(scenarioId===1){
-      const p12 = generateValidPath(n, buf);
+      const p12 = generateValidPath(rng, n, buf);
       const t12 = tokensOnPath(grid, p12);
-      puzzle1 = makePuzzleFromTokens(t12, 3, Math.min(6,buf));
-      puzzle2 = makePuzzleFromTokens(t12, 3, Math.min(6,buf));
+      puzzle1 = makePuzzleFromTokens(rng, t12, 3, Math.min(6,buf));
+      puzzle2 = makePuzzleFromTokens(rng, t12, 3, Math.min(6,buf));
       for(let k=0;k<8;k++){
         if(puzzle2.join(",")!==puzzle1.join(",")) break;
-        puzzle2 = makePuzzleFromTokens(t12, 3, Math.min(6,buf));
+        puzzle2 = makePuzzleFromTokens(rng, t12, 3, Math.min(6,buf));
       }
       paths.P12 = p12;
     }
 
     if(scenarioId===2){
-      const p2only = generateValidPath(n, buf);
+      const p2only = generateValidPath(rng, n, buf);
       const t2only = tokensOnPath(grid, p2only);
       const len2 = clamp(puzzle2.length, 3, Math.min(6,buf));
       puzzle2 = t2only.slice(0, len2);
@@ -286,7 +388,7 @@
     }
 
     for(let i=0;i<s.extraPaths;i++){
-      paths["EXTRA"+(i+1)] = generateValidPath(n, buf);
+      paths["EXTRA"+(i+1)] = generateValidPath(rng, n, buf);
     }
 
     return { puzzles:[puzzle1,puzzle2], paths, scenarioId };
@@ -296,18 +398,21 @@
   // LAYOUT
   // =========================================================
   function computeLayout(w,h,n){
-    const pad=16, top=78, bottom=16;
-    const rightW = clamp(Math.floor(w*0.34), 320, 520);
+    const pad=16, top=90, bottom=16;
+    const rightW = clamp(Math.floor(w*0.36), 340, 560);
     const gridPanel = {x:pad,y:top,w:w-rightW-3*pad,h:h-top-bottom};
     const rightPanel = {x:gridPanel.x+gridPanel.w+pad,y:top,w:rightW,h:gridPanel.h};
-    const inner=16, header=96, gap=6;
+    const inner=16, header=112, gap=6;
+
     const availW = gridPanel.w-2*inner;
     const availH = gridPanel.h-2*inner-header;
+
     const cellW = Math.floor((availW-(n-1)*gap)/n);
     const cellH = Math.floor((availH-(n-1)*gap)/n);
     const cell = clamp(Math.min(cellW,cellH), 18, 72);
+
     const origin = {x:gridPanel.x+inner,y:gridPanel.y+inner+header};
-    return {gridPanel,rightPanel,cell,gap,origin};
+    return {gridPanel,rightPanel,cell,gap,origin,inner,header};
   }
 
   function cellRect(origin, cell, gap, r,c){
@@ -325,56 +430,201 @@
   }
 
   // =========================================================
-  // GAME STATE
+  // UI HELPERS (cyberpunk skin)
+  // =========================================================
+  function roundRect(x,y,w,h,r){
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y, x+w,y+h, r);
+    ctx.arcTo(x+w,y+h, x,y+h, r);
+    ctx.arcTo(x,y+h, x,y, r);
+    ctx.arcTo(x,y, x+w,y, r);
+    ctx.closePath();
+  }
+
+  function neonText(text, x, y, color, size=34, align="left"){
+    ctx.save();
+    ctx.font = `700 ${size}px Consolas, monospace`;
+    ctx.textAlign = align;
+    ctx.textBaseline = "top";
+    // glow
+    ctx.shadowColor = rgba(color, 0.55);
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = rgb(color);
+    ctx.fillText(text, x, y);
+    // crisp layer
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = rgb(color);
+    ctx.fillText(text, x, y);
+    ctx.restore();
+  }
+
+  function fillPanel(rect, baseColor, accentColor=COL.green){
+    // gradient fill
+    const g = ctx.createLinearGradient(rect.x, rect.y, rect.x+rect.w, rect.y+rect.h);
+    g.addColorStop(0, `rgba(${baseColor[0]},${baseColor[1]},${baseColor[2]},0.92)`);
+    g.addColorStop(1, `rgba(${COL.panel2[0]},${COL.panel2[1]},${COL.panel2[2]},0.92)`);
+    ctx.fillStyle = g;
+    roundRect(rect.x,rect.y,rect.w,rect.h,18);
+    ctx.fill();
+
+    // border
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = `rgba(${accentColor[0]},${accentColor[1]},${accentColor[2]},0.25)`;
+    ctx.stroke();
+
+    // inner border
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = `rgba(255,255,255,0.06)`;
+    roundRect(rect.x+3,rect.y+3,rect.w-6,rect.h-6,16);
+    ctx.stroke();
+  }
+
+  function drawScanlines(w,h){
+    ctx.save();
+    ctx.globalAlpha = 0.08;
+    ctx.fillStyle = "black";
+    for(let y=0;y<h;y+=4){
+      ctx.fillRect(0,y,w,1);
+    }
+    ctx.restore();
+  }
+
+  function drawGrain(w,h){
+    // grain ultra léger (pas de perfs killer)
+    ctx.save();
+    ctx.globalAlpha = 0.05;
+    ctx.fillStyle = "white";
+    const n = 220;
+    for(let i=0;i<n;i++){
+      const x = Math.random()*w;
+      const y = Math.random()*h;
+      ctx.fillRect(x,y,1,1);
+    }
+    ctx.restore();
+  }
+
+  // =========================================================
+  // STATE / MENU OPTIONS (Seed + Série + Temps + Bonus/Malus)
   // =========================================================
   const STATE = { MENU:"menu", PLAY:"play", RESULT:"result" };
   let state = STATE.MENU;
 
-  let diff = 8;
-  let s = settingsFromDifficulty(diff);
+  // Options menu
+  let optDiff = 8;
+  let optSeries = 3;          // nombre de hacks à enchaîner
+  let optTimeLimit = 15;      // temps par sélection
+  let optBonusMode = "none";  // none|bonus|malus
+  let optSeedText = randomSeedText(); // seed lisible
+  let shareSeed = "";         // seed complète à partager (BP2....)
 
+  // Run
+  let runIndex = 0;           // hack actuel dans la série
+  let runScoreTotal = 0;
+  let runSuccessCount = 0;
+
+  // Game per-hack
+  let s = settingsFromDifficulty(optDiff);
+  let rng = makeRngFromSeedString("init");
   let grid=[], puzzles=[], paths={}, scenarioId=0;
   let buffer=[], chosen=[], cursor=[0,0];
   let stepTimerStart = performance.now()/1000;
-  let status = "Menu : choisis la difficulté.";
-  let showPaths = false; // easter egg, caché par défaut
-  let lastScore = 0;
+  let status = "Menu : configure la session.";
+  let showPaths = false; // easter egg
+  let lastHackScore = 0;
+  let lastHackSuccess = false;
 
-  function startPuzzle(){
-    s = settingsFromDifficulty(diff);
-    grid = genGrid(s.grid);
-    const out = generateScenario(grid, s);
+  function effectiveTimeLimit(){
+    // temps par sélection = base + bonus/malus
+    return clamp(optTimeLimit + (BONUS_TIME_DELTA[optBonusMode] || 0), 3, 60);
+  }
+
+  function syncMusicToState(){
+    if(!audioUnlocked) return;
+    if(state === STATE.MENU) setMusic(musicMenu);
+    else if(state === STATE.PLAY) setMusic(musicGame);
+    else setMusic(musicMenu);
+  }
+
+  function updateShareSeed(){
+    const payload = makeSeedPayload({
+      seedText: optSeedText,
+      diff: optDiff,
+      series: optSeries,
+      timeLimit: optTimeLimit,
+      bonusMode: optBonusMode
+    });
+    shareSeed = encodeSeed(payload);
+  }
+  updateShareSeed();
+
+  function applySeedString(seedString){
+    const decoded = decodeSeed(seedString);
+    if(!decoded) return false;
+
+    optSeedText = decoded.seedText || randomSeedText();
+    optDiff = clamp(decoded.diff ?? 8, 5, 15);
+    optSeries = clamp(decoded.series ?? 1, 1, 20);
+    optTimeLimit = clamp(decoded.timeLimit ?? 15, 3, 60);
+    optBonusMode = (decoded.bonusMode in BONUS_LABELS) ? decoded.bonusMode : "none";
+
+    updateShareSeed();
+    return true;
+  }
+
+  function startRun(){
+    // Initialise la série selon seed
+    updateShareSeed();
+    runIndex = 0;
+    runScoreTotal = 0;
+    runSuccessCount = 0;
+    startHackAtIndex(0);
+  }
+
+  function startHackAtIndex(i){
+    runIndex = i;
+    s = settingsFromDifficulty(optDiff);
+
+    // RNG stable : seedText + options + index
+    // => même série = mêmes hacks, mêmes puzzles, mêmes scénarios
+    const seedForThisHack = `BP2|${optSeedText}|d=${optDiff}|series=${optSeries}|t=${optTimeLimit}|bm=${optBonusMode}|i=${i}`;
+    rng = makeRngFromSeedString(seedForThisHack);
+
+    grid = genGrid(rng, s.grid);
+    const out = generateScenario(rng, grid, s);
     puzzles = out.puzzles;
     paths = out.paths;
     scenarioId = out.scenarioId;
 
     buffer=[]; chosen=[]; cursor=[0,0];
     stepTimerStart = performance.now()/1000;
-    status="Ligne 1 puis alternance colonne/ligne.";
-    lastScore=0;
-    state = STATE.PLAY;
+    status = "Ligne 1 puis alternance colonne/ligne.";
+    lastHackScore = 0;
+    lastHackSuccess = false;
 
+    state = STATE.PLAY;
     syncMusicToState();
   }
 
   function canPick(r,c){
     const step = chosen.length;
-    const last = chosen.length?chosen[chosen.length-1]:null;
+    const last = chosen.length ? chosen[chosen.length-1] : null;
     const allowed = allowedMoves(s.grid, step, last);
     return allowed.some(([rr,cc])=>rr===r && cc===c);
   }
 
   function pick(r,c){
     if(!canPick(r,c)){
-      status="Coup interdit (ligne 1 puis alternance colonne/ligne).";
+      status = "Coup interdit (ligne 1 puis alternance colonne/ligne).";
       return;
     }
     chosen.push([r,c]);
     buffer.push(grid[r][c]);
     stepTimerStart = performance.now()/1000;
-    status="Sélection validée.";
+    status = "Sélection validée.";
+
     if(buffer.length >= s.buffer){
-      finishPuzzle(false); // pas un timeout
+      finishHack(false);
     }
   }
 
@@ -385,22 +635,31 @@
     status="Annulation effectuée.";
   }
 
-  // timeoutFlag: true si fin due au timer
-  function finishPuzzle(timeoutFlag){
+  function finishHack(timeoutFlag){
     const res = scoreAndDone(buffer, puzzles);
-    lastScore = res.score;
+    lastHackScore = res.score;
 
-    // Critère réussite/échec :
-    // - réussite si au moins 1 puzzle validé ET pas un timeout.
-    // - sinon échec.
-    // (si tu veux "réussite uniquement si TOUS les puzzles sont validés", dis-moi et je te le change.)
+    // réussite si au moins 1 puzzle validé et pas timeout
     const success = (!timeoutFlag && res.done.length > 0);
+    lastHackSuccess = success;
 
-    if(success) playSfx(sfxSuccess);
-    else playSfx(sfxFail);
+    if(success) { playSfx(sfxSuccess); runSuccessCount++; }
+    else { playSfx(sfxFail); }
 
+    runScoreTotal += lastHackScore;
     state = STATE.RESULT;
     syncMusicToState();
+  }
+
+  function nextHackOrEnd(){
+    if(runIndex + 1 < optSeries){
+      startHackAtIndex(runIndex + 1);
+    } else {
+      // fin de série => retour menu avec récap dans status
+      state = STATE.MENU;
+      status = `Série terminée : ${runSuccessCount}/${optSeries} réussites | Score total : ${runScoreTotal}`;
+      syncMusicToState();
+    }
   }
 
   function pathColor(key){
@@ -419,10 +678,9 @@
   // INPUT (AZERTY + QWERTY) + Easter egg "="
   // =========================================================
   window.addEventListener("keydown", (e) => {
-    // Easter egg : toggle chemins/routes avec "=" (compatible claviers + navigateurs)
-    // - code "Equal" couvre la touche physique
-    // - key "=" pour layouts qui produisent directement =
-    // - key "+" / ")" pour certains AZERTY où la touche est partagée
+    unlockAudioOnce();
+
+    // Easter egg routes toggle: "Equal" or "=" or "+" or ")"
     if(state === STATE.PLAY){
       if (e.code === "Equal" || e.key === "=" || e.key === "+" || e.key === ")") {
         showPaths = !showPaths;
@@ -430,25 +688,73 @@
       }
     }
 
-    if(state===STATE.MENU){
-      if(e.key==="ArrowLeft" || e.key.toLowerCase()==="q" || e.key.toLowerCase()==="a"){ diff=clamp(diff-1,5,15); }
-      else if(e.key==="ArrowRight" || e.key.toLowerCase()==="d"){ diff=clamp(diff+1,5,15); }
-      else if(e.key==="Enter"){ startPuzzle(); }
+    if(state === STATE.MENU){
+      const k = e.key.toLowerCase();
+
+      // Naviguer options
+      if(e.key === "ArrowLeft" || k === "q" || k === "a") optDiff = clamp(optDiff - 1, 5, 15);
+      if(e.key === "ArrowRight" || k === "d") optDiff = clamp(optDiff + 1, 5, 15);
+
+      // Série : haut/bas
+      if(e.key === "ArrowUp" || k === "z" || k === "w") optSeries = clamp(optSeries + 1, 1, 20);
+      if(e.key === "ArrowDown" || k === "s") optSeries = clamp(optSeries - 1, 1, 20);
+
+      // Temps : PageUp/PageDown ou +/- (pratique)
+      if(e.key === "PageUp" || e.key === "+") optTimeLimit = clamp(optTimeLimit + 1, 3, 60);
+      if(e.key === "PageDown" || e.key === "-") optTimeLimit = clamp(optTimeLimit - 1, 3, 60);
+
+      // Bonus/malus : B
+      if(k === "b"){
+        optBonusMode = (optBonusMode === "none") ? "bonus" : (optBonusMode === "bonus") ? "malus" : "none";
+      }
+
+      // Seed random : R
+      if(k === "r"){
+        optSeedText = randomSeedText();
+      }
+
+      // Coller seed complète : V (ouvre prompt)
+      if(k === "v"){
+        const pasted = prompt("Colle une seed complète (BP2....) puis OK :");
+        if(pasted && applySeedString(pasted.trim())){
+          status = "Seed appliquée.";
+        } else if(pasted) {
+          status = "Seed invalide.";
+        }
+      }
+
+      // Copier seed : C
+      if(k === "c"){
+        updateShareSeed();
+        navigator.clipboard?.writeText(shareSeed).then(()=>{
+          status = "Seed copiée dans le presse-papiers.";
+        }).catch(()=>{
+          status = "Copie impossible (navigateur).";
+        });
+      }
+
+      // Lancer : Entrée
+      if(e.key === "Enter"){
+        updateShareSeed();
+        startRun();
+      }
+
+      updateShareSeed();
       syncMusicToState();
       return;
     }
 
-    if(state===STATE.PLAY){
-      const n=s.grid;
+    if(state === STATE.PLAY){
+      const n = s.grid;
       let [r,c]=cursor;
+      const k = e.key.toLowerCase();
 
       if(e.key==="Escape"){ state=STATE.MENU; syncMusicToState(); return; }
       if(e.key==="Backspace"){ e.preventDefault(); undo(); return; }
       if(e.key==="Enter"){ pick(r,c); return; }
 
-      // AZERTY: ZQSD + flèches
-      // QWERTY: WASD + flèches
-      const k = e.key.toLowerCase();
+      // AZERTY: ZQSD + arrows
+      // QWERTY: WASD + arrows
       if(e.key==="ArrowUp" || k==="z" || k==="w") r=clamp(r-1,0,n-1);
       else if(e.key==="ArrowDown" || k==="s") r=clamp(r+1,0,n-1);
       else if(e.key==="ArrowLeft" || k==="q" || k==="a") c=clamp(c-1,0,n-1);
@@ -458,14 +764,14 @@
       return;
     }
 
-    if(state===STATE.RESULT){
-      if(e.key==="Escape"){ state=STATE.MENU; syncMusicToState(); return; }
-      if(e.key==="Enter"){ startPuzzle(); return; }
+    if(state === STATE.RESULT){
+      if(e.key === "Escape"){ state=STATE.MENU; syncMusicToState(); return; }
+      if(e.key === "Enter"){ nextHackOrEnd(); return; }
     }
   });
 
   canvas.addEventListener("mousedown", (e) => {
-    unlockAudioOnce(); // clic = déblocage audio
+    unlockAudioOnce();
     if(state!==STATE.PLAY) return;
 
     const rect = canvas.getBoundingClientRect();
@@ -483,81 +789,124 @@
   // =========================================================
   // RENDER
   // =========================================================
-  function roundRect(x,y,w,h,r){
-    ctx.beginPath();
-    ctx.moveTo(x+r,y);
-    ctx.arcTo(x+w,y, x+w,y+h, r);
-    ctx.arcTo(x+w,y+h, x,y+h, r);
-    ctx.arcTo(x,y+h, x,y, r);
-    ctx.arcTo(x,y, x+w,y, r);
-    ctx.closePath();
-  }
+  function drawBackground(w,h){
+    const g = ctx.createLinearGradient(0,0,w,h);
+    g.addColorStop(0, rgb(COL.bg1));
+    g.addColorStop(1, rgb(COL.bg0));
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,w,h);
 
-  function fillPanel(rect, color, radius=18){
-    ctx.fillStyle = rgb(color);
-    roundRect(rect.x,rect.y,rect.w,rect.h,radius);
-    ctx.fill();
-    ctx.strokeStyle = rgb([35,45,65]);
-    ctx.lineWidth = 2;
-    ctx.stroke();
+    // neon accent bar
+    ctx.fillStyle = "rgba(0,255,160,0.06)";
+    ctx.fillRect(0,0,w,64);
+
+    drawScanlines(w,h);
+    drawGrain(w,h);
   }
 
   function draw(){
-    const w=window.innerWidth, h=window.innerHeight;
+    const w = window.innerWidth, h = window.innerHeight;
     ctx.clearRect(0,0,w,h);
-    ctx.fillStyle = rgb(COL.bg);
-    ctx.fillRect(0,0,w,h);
+    drawBackground(w,h);
 
-    ctx.font = "700 34px Consolas, monospace";
-    ctx.fillStyle = rgb(COL.green);
-    ctx.textAlign="left"; ctx.textBaseline="top";
-    ctx.fillText("BREACH PROTOCOL", 16, 16);
+    neonText("BREACH PROTOCOL", 16, 16, COL.green, 34, "left");
 
-    if(state===STATE.MENU){
+    if(state === STATE.MENU){
       syncMusicToState();
 
-      ctx.font = "20px Consolas, monospace";
+      // Header small
+      ctx.font = "18px Consolas, monospace";
       ctx.fillStyle = rgb(COL.dim);
-      ctx.textAlign="center";
-      ctx.fillText("Difficulté (5–15) • Q/D ou ◀/▶ • Entrée pour lancer", w/2, 110);
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillText(status || "Menu : configure la session.", 16, 60);
 
-      const panel={x:220,y:150,w:w-440,h:260};
-      fillPanel(panel, COL.panel);
-      const ss = settingsFromDifficulty(diff);
+      // Main panel
+      const panel = {x: 150, y: 100, w: w-300, h: h-200};
+      fillPanel(panel, COL.panel, COL.green);
 
-      ctx.font="700 34px Consolas, monospace";
-      ctx.fillStyle=rgb(COL.text);
-      ctx.fillText("Difficulté : "+diff, w/2, 190);
-      ctx.font="20px Consolas, monospace";
-      ctx.fillStyle=rgb(COL.cyan);
-      ctx.fillText(`Grille : ${ss.grid}×${ss.grid}`, w/2, 240);
-      ctx.fillStyle=rgb(COL.magenta);
-      ctx.fillText(`Buffer : ${ss.buffer}`, w/2, 270);
-      ctx.fillStyle=rgb(COL.yellow);
-      ctx.fillText(`Timer / coup : ${STEP_TIME_LIMIT}s`, w/2, 300);
+      // Title
+      neonText("PARAMÈTRES DE SESSION", panel.x + panel.w/2, panel.y + 26, COL.cyan, 26, "center");
 
-      ctx.fillStyle=rgb(COL.dim);
-      ctx.fillText("Jeu : ZQSD/WASD/flèches • Entrée/clic • Backspace : annuler", w/2, 430);
+      // Left column text
+      ctx.font = "20px Consolas, monospace";
+      ctx.fillStyle = rgb(COL.text);
+      ctx.textAlign = "left";
+
+      let y = panel.y + 90;
+      const xL = panel.x + 34;
+
+      ctx.fillStyle = rgb(COL.cyan);
+      ctx.fillText("Difficulté", xL, y);
+      ctx.fillStyle = rgb(COL.text);
+      ctx.fillText(String(optDiff), xL + 240, y); y += 34;
+
+      ctx.fillStyle = rgb(COL.cyan);
+      ctx.fillText("Série (nombre de hacks)", xL, y);
+      ctx.fillStyle = rgb(COL.text);
+      ctx.fillText(String(optSeries), xL + 240, y); y += 34;
+
+      ctx.fillStyle = rgb(COL.cyan);
+      ctx.fillText("Temps par sélection (s)", xL, y);
+      ctx.fillStyle = rgb(COL.text);
+      ctx.fillText(String(optTimeLimit), xL + 240, y); y += 34;
+
+      ctx.fillStyle = rgb(COL.cyan);
+      ctx.fillText("Bonus / Malus", xL, y);
+      ctx.fillStyle = rgb(COL.text);
+      ctx.fillText(BONUS_LABELS[optBonusMode], xL + 240, y); y += 44;
+
+      // Seed block
+      ctx.fillStyle = rgb(COL.cyan);
+      ctx.fillText("Seed partagée", xL, y); y += 26;
+
+      // seed display box
+      const box = {x:xL, y:y, w: panel.w - 68, h: 84};
+      fillPanel(box, COL.panel2, COL.cyan);
+
+      ctx.font = "16px Consolas, monospace";
+      ctx.fillStyle = rgb(COL.text);
+      ctx.textAlign = "left";
+      ctx.fillText("Seed courte : " + optSeedText, box.x + 14, box.y + 14);
+      ctx.fillStyle = rgb(COL.dim);
+      ctx.fillText("Seed complète : " + shareSeed, box.x + 14, box.y + 40);
+
+      y += 110;
+
+      // Controls panel
+      ctx.font = "16px Consolas, monospace";
+      ctx.fillStyle = rgb(COL.dim);
+      ctx.fillText("Contrôles (menu)", xL, y); y += 22;
+      ctx.fillText("← → (ou Q/D/A) : difficulté | ↑ ↓ : série | PageUp/PageDown ou +/- : temps", xL, y); y += 20;
+      ctx.fillText("B : bonus/malus | R : seed aléatoire | V : coller seed complète | C : copier seed", xL, y); y += 20;
+      ctx.fillText("Entrée : démarrer la série", xL, y);
+
       return;
     }
 
-    if(state===STATE.PLAY){
+    if(state === STATE.PLAY){
       syncMusicToState();
 
       const layout = computeLayout(w,h,s.grid);
-      fillPanel(layout.gridPanel, COL.panel);
-      fillPanel(layout.rightPanel, COL.panel);
+
+      fillPanel(layout.gridPanel, COL.panel, COL.green);
+      fillPanel(layout.rightPanel, COL.panel, COL.cyan);
 
       const now = performance.now()/1000;
-      const remaining = Math.max(0, STEP_TIME_LIMIT - (now - stepTimerStart));
+      const timeLimit = effectiveTimeLimit();
+      const remaining = Math.max(0, timeLimit - (now - stepTimerStart));
       const timerCol = remaining>3 ? COL.yellow : COL.red;
 
+      // Top HUD
       ctx.textAlign="left"; ctx.textBaseline="top";
       ctx.font="18px Consolas, monospace";
       ctx.fillStyle=rgb(COL.dim);
-      ctx.fillText(`Difficulté ${diff} | Buffer ${buffer.length}/${s.buffer} | Scénario : ${SCEN_LABELS[scenarioId]}`, 16, 56);
+      ctx.fillText(
+        `Série : ${runIndex+1}/${optSeries} | Difficulté ${optDiff} | Scénario : ${SCEN_LABELS[scenarioId]}`,
+        16, 60
+      );
 
-      ctx.font="700 34px Consolas, monospace";
+      ctx.font="700 32px Consolas, monospace";
       ctx.fillStyle=rgb(timerCol);
       ctx.textAlign="right";
       ctx.fillText(`TIMER: ${remaining.toFixed(1)}s`, w-16, 16);
@@ -567,11 +916,13 @@
       ctx.font="20px Consolas, monospace";
       ctx.fillStyle=rgb(COL.cyan);
       ctx.fillText("BUFFER", layout.gridPanel.x+16, layout.gridPanel.y+14);
+
       ctx.font="18px Consolas, monospace";
       ctx.fillStyle=rgb(COL.text);
-      ctx.fillText(buffer.length ? buffer.join(" ") : "<vide>", layout.gridPanel.x+16, layout.gridPanel.y+40);
-      ctx.fillStyle=rgb(status.toLowerCase().includes("interdit") ? COL.red : COL.text);
-      ctx.fillText(status, layout.gridPanel.x+16, layout.gridPanel.y+64);
+      ctx.fillText(buffer.length ? buffer.join(" ") : "<vide>", layout.gridPanel.x+16, layout.gridPanel.y+42);
+
+      ctx.fillStyle=rgb(status.toLowerCase().includes("interdit") ? COL.red : COL.dim);
+      ctx.fillText(status, layout.gridPanel.x+16, layout.gridPanel.y+66);
 
       // Allowed set
       const step = chosen.length;
@@ -589,11 +940,12 @@
         }
       }
 
-      // Draw grid
+      // Grid title
       ctx.font="20px Consolas, monospace";
       ctx.fillStyle=rgb(COL.green);
-      ctx.fillText("CODE MATRIX", layout.gridPanel.x+16, layout.gridPanel.y+90);
+      ctx.fillText("CODE MATRIX", layout.gridPanel.x+16, layout.gridPanel.y+94);
 
+      // Draw grid
       for(let r=0;r<s.grid;r++){
         for(let c=0;c<s.grid;c++){
           const rect = cellRect(layout.origin, layout.cell, layout.gap, r,c);
@@ -601,40 +953,50 @@
           // base cell
           ctx.fillStyle=rgb(COL.cell);
           roundRect(rect.x,rect.y,rect.w,rect.h,10); ctx.fill();
-          ctx.strokeStyle=rgb(COL.cellBorder); ctx.lineWidth=2; ctx.stroke();
+
+          ctx.strokeStyle=rgba(COL.cellBorder, 0.8);
+          ctx.lineWidth=2; ctx.stroke();
 
           // path overlays
           if(showPaths){
             for(const [col,set] of pathSets){
               if(set.has(r+","+c)){
-                ctx.strokeStyle=rgb(col); ctx.lineWidth=2;
-                roundRect(rect.x-2,rect.y-2,rect.w+4,rect.h+4,12); ctx.stroke();
+                ctx.strokeStyle=rgba(col, 0.9);
+                ctx.lineWidth=2;
+                roundRect(rect.x-2,rect.y-2,rect.w+4,rect.h+4,12);
+                ctx.stroke();
               }
             }
           }
 
           // allowed outline
           if(allowedSet.has(r+","+c)){
-            ctx.strokeStyle=rgb(COL.cyan); ctx.lineWidth=3;
-            roundRect(rect.x-4,rect.y-4,rect.w+8,rect.h+8,14); ctx.stroke();
+            ctx.strokeStyle=rgba(COL.cyan, 0.9);
+            ctx.lineWidth=3;
+            roundRect(rect.x-4,rect.y-4,rect.w+8,rect.h+8,14);
+            ctx.stroke();
           }
 
           // chosen
           if(chosenSet.has(r+","+c)){
-            ctx.fillStyle="rgb(35,18,45)";
+            ctx.fillStyle="rgba(35,18,45,0.95)";
             roundRect(rect.x,rect.y,rect.w,rect.h,10); ctx.fill();
-            ctx.strokeStyle=rgb(COL.magenta); ctx.lineWidth=3; ctx.stroke();
+            ctx.strokeStyle=rgba(COL.magenta, 0.9);
+            ctx.lineWidth=3; ctx.stroke();
           }
 
           // cursor
           if(cursor[0]===r && cursor[1]===c){
-            ctx.strokeStyle=rgb(COL.yellow); ctx.lineWidth=3;
-            roundRect(rect.x-6,rect.y-6,rect.w+12,rect.h+12,16); ctx.stroke();
+            ctx.strokeStyle=rgba(COL.yellow, 0.9);
+            ctx.lineWidth=3;
+            roundRect(rect.x-6,rect.y-6,rect.w+12,rect.h+12,16);
+            ctx.stroke();
           }
 
           // token text
           ctx.fillStyle=rgb(COL.text);
           ctx.textAlign="center"; ctx.textBaseline="middle";
+          ctx.font="18px Consolas, monospace";
           ctx.fillText(grid[r][c], rect.x+rect.w/2, rect.y+rect.h/2);
         }
       }
@@ -660,11 +1022,18 @@
         y += 28;
       });
 
-      // Legend (ne mentionne plus aucune touche)
+      // Seed mini display
       y += 10;
       ctx.fillStyle=rgb(COL.cyan);
-      ctx.fillText("Routes", layout.rightPanel.x+16, y);
-      y += 26;
+      ctx.fillText("Seed", layout.rightPanel.x+16, y); y += 22;
+      ctx.fillStyle=rgb(COL.dim);
+      ctx.font="14px Consolas, monospace";
+      ctx.fillText(shareSeed, layout.rightPanel.x+16, y); y += 26;
+
+      // Routes legend (sans mention de touche)
+      ctx.font="18px Consolas, monospace";
+      ctx.fillStyle=rgb(COL.cyan);
+      ctx.fillText("Routes", layout.rightPanel.x+16, y); y += 24;
 
       const legend = [];
       if(paths.P1) legend.push(["Chemin P1", COL.pathRed]);
@@ -675,48 +1044,57 @@
         legend.push(["Chemin "+k, pathColor(k)]);
       });
 
+      ctx.font="16px Consolas, monospace";
       legend.slice(0,10).forEach(([name,col])=>{
         ctx.fillStyle=rgb(col);
         ctx.fillText("■ "+name, layout.rightPanel.x+16, y);
-        y += 22;
+        y += 20;
       });
 
       // timer check
       if(remaining <= 0){
         status = "Temps écoulé — transfert interrompu.";
-        finishPuzzle(true); // timeout
+        finishHack(true);
       }
       return;
     }
 
-    if(state===STATE.RESULT){
+    if(state === STATE.RESULT){
       syncMusicToState();
 
       const res = scoreAndDone(buffer, puzzles);
-      ctx.textAlign="center"; ctx.textBaseline="top";
-      ctx.font="700 34px Consolas, monospace";
-      ctx.fillStyle=rgb(COL.green);
-      ctx.fillText("RÉSULTAT DU TRANSFERT", w/2, 170);
-      ctx.fillStyle=rgb(COL.text);
-      ctx.fillText("SCORE : "+res.score, w/2, 230);
+      const ok = lastHackSuccess;
+
+      neonText(ok ? "TRANSFERT RÉUSSI" : "TRANSFERT ÉCHOUÉ", w/2, 140, ok ? COL.green : COL.red, 42, "center");
 
       ctx.font="20px Consolas, monospace";
       ctx.fillStyle=rgb(COL.dim);
+      ctx.textAlign="center"; ctx.textBaseline="top";
+      ctx.fillText(`Hack ${runIndex+1}/${optSeries} — Score : ${res.score} — Total : ${runScoreTotal}`, w/2, 210);
+
       const doneTxt = res.done.length ? res.done.map(i=>"Puzzle "+(i+1)).join(", ") : "aucun";
-      ctx.fillText("Validés : "+doneTxt, w/2, 280);
-      ctx.fillText("Entrée : rejouer | ESC : menu", w/2, 340);
+      ctx.fillText("Validés : " + doneTxt, w/2, 250);
+
+      ctx.fillStyle=rgb(COL.dim);
+      ctx.fillText("Entrée : hack suivant | ESC : menu", w/2, 320);
+
       return;
     }
   }
 
+  // =========================================================
+  // LOOP
+  // =========================================================
   function loop(){
     draw();
     requestAnimationFrame(loop);
   }
 
-  // Au chargement, on reste en menu (musique se lance quand l'utilisateur fait une action)
+  // init
+  updateShareSeed();
   syncMusicToState();
   loop();
+
 })();
 </script>
 </body>
